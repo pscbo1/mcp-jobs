@@ -1,5 +1,9 @@
 export const jobSearchUrls = [
   {
+    url: 'https://www.zhaopin.com/sou',
+    name: 'zhaopin',
+  },
+  {
     url: 'https://m.zhipin.com/c100010000',
     name: 'zhipin',
   },
@@ -12,11 +16,7 @@ export const jobSearchUrls = [
     name: 'lagou',
   },
   {
-    url: 'https://www.zhaopin.com/',
-    name: 'zhaopin',
-  },
-  {
     url: 'https://www.51job.com/',
     name: '51job',
-  }
-]
+  },
+];

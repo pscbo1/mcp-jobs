@@ -2,6 +2,11 @@ import { chromium, firefox, webkit, Browser, BrowserContext, Page, ElementHandle
 import { SiteConfig, CrawlerRule } from '../config/crawlerConfig';
 import { crawlerConfigs } from '../config/crawlerConfig';
 import { crawlerConfigService } from '../services/crawlerConfigService';
+import {
+  assessCrawlOutcome,
+  countValidJobs,
+  normalizeJobInfoList,
+} from './crawlFailure';
 
 export interface CrawlerData {
   url: string;
@@ -11,6 +16,9 @@ export interface CrawlerData {
   params?: Record<string, string>;
   succeeded: boolean;
   errors?: string[];
+  finalUrl?: string;
+  visibleCardCount?: number;
+  parsedCount?: number;
 }
 
 export class WebCrawler {
@@ -106,21 +114,74 @@ export class WebCrawler {
       });
       
       // 等待一小段时间确保动态内容加载
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(2500);
+
+      const jobInfoSelector = config.rules?.jobInfo?.selector;
+      const outcome = await assessCrawlOutcome(page, url, jobInfoSelector);
+      this.log('Crawl outcome assessment:', outcome);
+
+      if (outcome.failed) {
+        const errorData: CrawlerData = {
+          url,
+          finalUrl: outcome.finalUrl,
+          data: {},
+          timestamp: Date.now(),
+          params,
+          succeeded: false,
+          errors: outcome.errors,
+          visibleCardCount: outcome.cardCount,
+          parsedCount: 0,
+        };
+        this.saveData(config.name, errorData);
+        return;
+      }
       
       this.log('Page loaded successfully');
       
       this.log('Extracting data using rules:', config.rules);
-      const { rawData, processedData } = await this.extractData(page);
+      const { rawData, processedData } = await this.extractData(page, config);
       this.log('Data extracted successfully:', { raw: rawData, processed: processedData });
+
+      const jobs = normalizeJobInfoList(processedData.jobInfo);
+      const parsedCount = countValidJobs(jobs);
+      const visibleCardCount =
+        outcome.cardCount ||
+        (jobInfoSelector ? (await page.$$(jobInfoSelector)).length : jobs.length);
+
+      if (config.rules?.jobInfo && (visibleCardCount === 0 || parsedCount === 0)) {
+        const errorData: CrawlerData = {
+          url,
+          finalUrl: page.url(),
+          data: processedData,
+          rawData,
+          timestamp: Date.now(),
+          params,
+          succeeded: false,
+          errors: [
+            visibleCardCount === 0
+              ? `ZERO_JOB_CARDS: selector "${jobInfoSelector}" matched 0 elements`
+              : `PARSE_ZERO_JOBS: visible cards=${visibleCardCount}, valid parsed jobs=0`,
+          ],
+          visibleCardCount,
+          parsedCount: 0,
+        };
+        this.saveData(config.name, errorData);
+        return;
+      }
       
       const crawlerData: CrawlerData = {
-        url: url,
-        data: processedData,
+        url,
+        finalUrl: page.url(),
+        data: {
+          ...processedData,
+          jobInfo: config.rules?.jobInfo ? jobs : processedData.jobInfo,
+        },
         rawData,
         timestamp: Date.now(),
         params: params,
-        succeeded: true
+        succeeded: true,
+        visibleCardCount,
+        parsedCount: config.rules?.jobInfo ? parsedCount : undefined,
       };
 
       this.log(`Saving data for site: ${config.name}`);
@@ -156,12 +217,18 @@ export class WebCrawler {
     this.log(`Current data count for ${siteName}: ${this.crawledData.get(siteName)?.length}`);
   }
 
-  private async extractData(page: Page): Promise<{ rawData: Record<string, any>, processedData: Record<string, any> }> {
+  private async extractData(
+    page: Page,
+    siteConfig?: SiteConfig
+  ): Promise<{ rawData: Record<string, any>, processedData: Record<string, any> }> {
     const rawData: Record<string, any> = {};
     const processedData: Record<string, any> = {};
-    const rules = crawlerConfigs.find(config => {
-      return config.url === page.url() || (config.urlPattern && new RegExp(config.urlPattern).test(page.url()))
-    })?.rules;
+    const rules =
+      siteConfig?.rules ||
+      this.currentSiteConfig?.rules ||
+      crawlerConfigs.find(config => {
+        return config.url === page.url() || (config.urlPattern && new RegExp(config.urlPattern).test(page.url()))
+      })?.rules;
 
     for (const [key, rule] of Object.entries(rules || [])) {
       this.log(`Extracting data for rule: ${key}`, rule);
@@ -216,7 +283,7 @@ export class WebCrawler {
       }
     }
 
-    return { rawData: {}, processedData };
+    return { rawData, processedData };
   }
 
   async crawl(config: SiteConfig & { params?: Record<string, string> }): Promise<void> {
