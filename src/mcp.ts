@@ -148,21 +148,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
           server.sendLoggingMessage({
             level: 'info',
-            data: `搜索完成，找到 ${results.length} 个职位`,
+            data: `搜索完成，找到 ${results.jobs.length} 个职位; sources=${JSON.stringify(results.sources)}`,
           });
 
-          // Add metadata about authentication status
           const responseData = {
-            jobs: results,
+            jobs: results.jobs,
             metadata: {
-              totalResults: results.length,
+              totalResults: results.jobs.length,
               searchParams: { keyword, city, page, salary, workYear },
-            }
+              sources: results.sources,
+              anySucceeded: results.anySucceeded,
+              allSucceeded: results.allSucceeded,
+              ...(results.anySucceeded
+                ? {}
+                : {
+                    error: 'ALL_SOURCES_FAILED',
+                    message: '所有数据源均失败，未返回职位（非空成功）',
+                  }),
+            },
           };
 
           return {
             content: [{ type: 'text', text: JSON.stringify(responseData) }],
-            isError: false,
+            isError: !results.anySucceeded,
           };
         } catch (error) {
           server.sendLoggingMessage({
@@ -170,7 +178,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             data: `搜索失败: ${error instanceof Error ? error.message : String(error)}`,
           });
 
-          // Provide fallback response even when search fails
           return {
             content: [{
               type: 'text',
@@ -179,11 +186,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 metadata: {
                   totalResults: 0,
                   searchParams: { keyword, city, page, salary, workYear },
-                  error: '搜索服务暂时不可用，请稍后重试',
+                  error: error instanceof Error ? error.message : String(error),
+                  message: '搜索服务失败，未伪装为空列表成功',
                 }
               })
             }],
-            isError: false,
+            isError: true,
           };
         }
       }

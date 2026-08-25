@@ -261,6 +261,202 @@ export const crawlerConfigs: SiteConfig[] = [
     }
   },
   {
+    url: 'https://www.zhaopin.com/sou',
+    name: 'zhaopin',
+    urlPattern: '^https://(www\\.)?zhaopin\\.com/sou.*$',
+    urlBuilder: (url, params, paramsConfig) => {
+      const { keyword, city, page = 1, salary, workYear } = params;
+      const cityCodeMap: Record<string, string> = {
+        北京: '489',
+        上海: '538',
+        广州: '763',
+        深圳: '765',
+        杭州: '653',
+        成都: '801',
+        南京: '635',
+        武汉: '736',
+        西安: '854',
+        苏州: '639',
+      };
+      const jl =
+        (paramsConfig?.cityCode?.rule && paramsConfig.cityCode.rule[city]) ||
+        cityCodeMap[city || ''] ||
+        '';
+      const query = new URLSearchParams();
+      if (jl) query.set('jl', jl);
+      // Prefer bare keyword; city is encoded via jl when known
+      query.set('kw', keyword || '');
+      query.set('p', String(page || 1));
+      if (salary && paramsConfig?.salaryCode?.rule?.[salary]) {
+        query.set('sl', paramsConfig.salaryCode.rule[salary]);
+      }
+      if (workYear && paramsConfig?.workYearCode?.rule?.[workYear]) {
+        query.set('we', paramsConfig.workYearCode.rule[workYear]);
+      }
+      const base = url.endsWith('/sou') || url.includes('/sou') ? url.split('?')[0] : 'https://www.zhaopin.com/sou';
+      return `${base}?${query.toString()}`;
+    },
+    config: {
+      cityCode: {
+        name: 'jl',
+        description: '城市编码',
+        type: 'string',
+        default: '',
+        rule: {
+          北京: '489',
+          上海: '538',
+          广州: '763',
+          深圳: '765',
+          杭州: '653',
+          成都: '801',
+          南京: '635',
+          武汉: '736',
+          西安: '854',
+          苏州: '639',
+        },
+      },
+      salaryCode: {
+        name: 'sl',
+        description: '薪资编码',
+        type: 'string',
+        default: '',
+        rule: {
+          '10万以下': '001,002',
+          '10-15万': '003',
+          '16-20万': '004',
+          '21-30万': '005',
+          '31-50万': '006',
+          '51-100万': '007',
+          '100万以上': '008',
+        },
+      },
+      workYearCode: {
+        name: 'we',
+        description: '工作经验',
+        type: 'string',
+        default: '',
+        rule: {
+          应届生: '0000',
+          '1年以下': '0001',
+          '1-3年': '0002',
+          '3-5年': '0003',
+          '5-10年': '0004',
+          '10年以上': '0005',
+        },
+      },
+    },
+    rules: {
+      jobInfo: {
+        selector: '.joblist-box__item',
+        type: 'html',
+        handler: async (currentData, value, element) => {
+          const textOf = async (selectors: string[]): Promise<string> => {
+            for (const sel of selectors) {
+              try {
+                const t = await element.$eval(sel, (el) => el.textContent?.trim() || '');
+                if (t) return t;
+              } catch {
+                // try next
+              }
+            }
+            return '';
+          };
+
+          const title = await textOf([
+            'a.jobinfo__name',
+            '.jobinfo__name',
+            '.iteminfo__line1 a',
+            '.joblist-box__iteminfo a',
+          ]);
+          const salary = await textOf([
+            '.jobinfo__salary',
+            '.salary',
+            '[class*="salary"]',
+          ]);
+          const company = await textOf([
+            'a.companyinfo__name',
+            '.companyinfo__name',
+            '.company-name',
+            '[class*="companyinfo"] a',
+          ]);
+
+          // Location / experience often sit in info pills
+          const pills = await element
+            .$$eval(
+              '.jobinfo__other-info-item, .joblist-box__item-info span, .iteminfo__line2 span, [class*="other-info"] span',
+              (els) => els.map((el) => el.textContent?.trim() || '').filter(Boolean)
+            )
+            .catch(() => [] as string[]);
+
+          let address = pills.find((p) => /北京|上海|广州|深圳|杭州|成都|南京|武汉|西安|苏州|·/.test(p)) || '';
+          let experience =
+            pills.find((p) => /年|经验|应届|实习|不限/.test(p)) || '';
+
+          if (!address) {
+            address = await textOf(['.jobinfo__address', '.job-address', '[class*="address"]']);
+          }
+          if (!experience) {
+            experience = await textOf(['[class*="year"]', '[class*="experience"]']);
+          }
+
+          let jobDetail = '';
+          try {
+            jobDetail = await element.$eval('a[href*="jobdetail"], a[href*="/job/"], a.jobinfo__name, a[href]', (el) => {
+              const href = el.getAttribute('href') || '';
+              if (!href) return '';
+              if (href.startsWith('http')) return href;
+              if (href.startsWith('//')) return `https:${href}`;
+              return `https://www.zhaopin.com${href.startsWith('/') ? '' : '/'}${href}`;
+            });
+          } catch {
+            jobDetail = '';
+          }
+
+          // Fallback: parse visible text lines when CSS drifts
+          if (!title || !company || !salary) {
+            const lines = ((await element.textContent()) || '')
+              .split(/\n+/)
+              .map((s) => s.trim())
+              .filter(Boolean);
+            const fallbackTitle = title || lines[0] || '';
+            const fallbackSalary =
+              salary || lines.find((l) => /元|万|面议|k/i.test(l)) || '';
+            const fallbackCompany =
+              company ||
+              lines.find((l) => /公司|科技|集团|银行|研究院|有限/.test(l) && !/立即/.test(l)) ||
+              '';
+            const fallbackAddress =
+              address || lines.find((l) => /北京|上海|广州|深圳|·/.test(l)) || '';
+            const fallbackExp =
+              experience || lines.find((l) => /年|经验不限|应届|实习/.test(l)) || '';
+            return {
+              title: fallbackTitle,
+              company: fallbackCompany,
+              address: fallbackAddress,
+              experience: fallbackExp,
+              salary: fallbackSalary,
+              jobDetail,
+              tags: pills,
+            };
+          }
+
+          return {
+            title,
+            company,
+            address,
+            experience,
+            salary,
+            jobDetail,
+            tags: pills,
+          };
+        },
+      },
+    },
+    maxRequestsPerCrawl: 1,
+    maxConcurrency: 1,
+    timeout: 45000,
+  },
+  {
     url: '',
     name: 'zhipin-detail',
     urlPattern: '^https://m\.zhipin\.com/job_detail/.*$',
