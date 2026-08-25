@@ -84,26 +84,59 @@ export class CrawlerConfigService {
   }
 
   /**
+   * Persistent profile for BOSS / zhipin-web when BOSS_USER_DATA_DIR is set.
+   * Login once in a visible browser into this directory; MCP reuses the session.
+   */
+  public getUserDataDir(siteName?: string, siteConfig?: BrowserConfig): string | undefined {
+    if (siteConfig?.userDataDir) return siteConfig.userDataDir;
+    const fromEnv = process.env.BOSS_USER_DATA_DIR?.trim();
+    if (!fromEnv) return undefined;
+    if (!siteName || siteName === 'zhipin-web' || siteName === 'zhipin') {
+      return fromEnv;
+    }
+    return undefined;
+  }
+
+  /**
    * 获取浏览器启动参数
    */
-  public getBrowserLaunchOptions(siteConfig?: BrowserConfig): {
+  public getBrowserLaunchOptions(
+    siteConfig?: BrowserConfig,
+    siteName?: string
+  ): {
     headless: boolean;
     args: string[];
+    channel?: string;
   } {
     const browserConfig = this.getBrowserConfig(siteConfig);
-    
+    const userDataDir = this.getUserDataDir(siteName, siteConfig);
+    // Real Chrome is more reliable for BOSS login/session reuse.
+    const channel = userDataDir
+      ? process.env.BOSS_BROWSER_CHANNEL || 'chrome'
+      : undefined;
+
+    // Avoid --no-sandbox for real Chrome channel (causes yellow warning + blank/flicker).
+    const args = userDataDir
+      ? [
+          '--disable-blink-features=AutomationControlled',
+          '--no-first-run',
+        ]
+      : [
+          `--user-agent="${browserConfig.userAgent}"`,
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--disable-gpu',
+          '--disable-blink-features=AutomationControlled',
+        ];
+
     return {
       headless: browserConfig.headless!,
-      args: [
-        `--user-agent="${browserConfig.userAgent}"`,
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu'
-      ]
+      args,
+      ...(channel ? { channel } : {}),
     };
   }
 
@@ -113,12 +146,14 @@ export class CrawlerConfigService {
   public getBrowserContextOptions(siteConfig?: BrowserConfig): {
     viewport: { width: number; height: number };
     userAgent: string;
+    locale: string;
   } {
     const browserConfig = this.getBrowserConfig(siteConfig);
     
     return {
       viewport: browserConfig.viewport!,
       userAgent: browserConfig.userAgent!,
+      locale: 'zh-CN',
     };
   }
 

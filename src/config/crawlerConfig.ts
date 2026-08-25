@@ -15,6 +15,8 @@ export interface BrowserConfig {
     height: number;
   };
   userAgent?: string;    // 用户代理
+  /** Persistent Chromium profile dir (e.g. BOSS login session). Never commit this path's contents. */
+  userDataDir?: string;
 }
 
 export interface SiteConfig {
@@ -198,8 +200,10 @@ export const crawlerConfigs: SiteConfig[] = [
     url: 'https://www.zhipin.com/web/geek/job',
     name: 'zhipin-web',
     urlPattern: '^https://www\\.zhipin\\.com/web/geek/jobs?.*$',
-    urlBuilder: (url, params) => {
-      const { keyword, city, page } = params;
+    // Filter codes verified by clicking desktop UI and reading location.search (raw CDP).
+    // Do not invent codes beyond boss-verified maps below.
+    urlBuilder: (url, params, paramsConfig) => {
+      const { keyword, city, page, salary, workYear, degree } = params as Record<string, any>;
       const cityCodeMap: Record<string, string> = {
         北京: '101010100',
         上海: '101020100',
@@ -217,7 +221,55 @@ export const crawlerConfigs: SiteConfig[] = [
       query.set('query', keyword || '');
       query.set('city', cityCode);
       if (page && Number(page) > 1) query.set('page', String(page));
+
+      const expMap = paramsConfig?.experienceCode?.rule || {};
+      const salMap = paramsConfig?.salaryCode?.rule || {};
+      const degMap = paramsConfig?.degreeCode?.rule || {};
+      if (workYear && expMap[workYear]) query.set('experience', expMap[workYear]);
+      if (salary && salMap[salary]) query.set('salary', salMap[salary]);
+      if (degree && degMap[degree]) query.set('degree', degMap[degree]);
+
       return `https://www.zhipin.com/web/geek/job?${query.toString()}`;
+    },
+    config: {
+      experienceCode: {
+        name: 'experience',
+        description: '工作经验（桌面版 URL 已验证）',
+        type: 'string',
+        default: '',
+        rule: {
+          在校生: '108',
+          应届生: '102',
+          '1年以内': '103',
+          '1-3年': '104',
+          '3-5年': '105',
+          '5-10年': '106',
+          '10年以上': '107',
+        },
+      },
+      salaryCode: {
+        name: 'salary',
+        description: '薪资待遇（桌面版 URL 已验证）',
+        type: 'string',
+        default: '',
+        rule: {
+          '3K以下': '402',
+          '3-5K': '403',
+          '5-10K': '404',
+          '10-20K': '405',
+          '20-50K': '406',
+          // 50K以上: not URL-verified in the interrupted run; omit intentionally
+        },
+      },
+      degreeCode: {
+        name: 'degree',
+        description: '学历要求（仅 URL 已验证项）',
+        type: 'string',
+        default: '',
+        rule: {
+          本科: '203',
+        },
+      },
     },
     rules: {
       jobInfo: {

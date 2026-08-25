@@ -148,13 +148,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
           server.sendLoggingMessage({
             level: 'info',
-            data: `搜索完成，找到 ${results.jobs.length} 个职位; sources=${JSON.stringify(results.sources)}`,
+            data: `搜索完成，原始 ${results.rawJobs.length}，保留 ${results.jobs.length}; sources=${JSON.stringify(results.sources)}`,
           });
 
           const responseData = {
             jobs: results.jobs,
             metadata: {
               totalResults: results.jobs.length,
+              rawCount: results.rawJobs.length,
+              filteredCount: results.filteredJobs.length,
+              excludedCount: results.excludedJobs.length,
+              excludeReasonSummary: results.excludeReasonSummary,
+              excludedSample: results.excludedJobs.slice(0, 20).map((j) => ({
+                title: j.title,
+                company: j.company,
+                excludeReasons: j.excludeReasons,
+              })),
               searchParams: { keyword, city, page, salary, workYear },
               sources: results.sources,
               anySucceeded: results.anySucceeded,

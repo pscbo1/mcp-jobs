@@ -49,31 +49,19 @@ export class WebCrawler {
   }
 
   private async setupBrowser(): Promise<void> {
-    if (!this.browser) {
-      this.log('Launching browser...');
+    if (this.context) return;
 
-      // 获取浏览器启动配置
-      const launchOptions = crawlerConfigService.getBrowserLaunchOptions(
-        this.currentSiteConfig?.browserConfig
-      );
+    const siteBrowser = this.currentSiteConfig?.browserConfig;
+    const launchOptions = crawlerConfigService.getBrowserLaunchOptions(
+      siteBrowser,
+      this.currentSiteConfig?.name
+    );
+    const contextOptions = crawlerConfigService.getBrowserContextOptions(siteBrowser);
 
-      this.log(`Browser launch options: headless=${launchOptions.headless}`);
-
-      this.browser = await chromium.launch(launchOptions);
-      this.log('Browser launched');
-    }
-
-    if (!this.context) {
-      this.log('Creating browser context...');
-
-      // 获取浏览器上下文配置
-      const contextOptions = crawlerConfigService.getBrowserContextOptions(
-        this.currentSiteConfig?.browserConfig
-      );
-
-      this.context = await this.browser.newContext(contextOptions);
-      this.log('Browser context created');
-    }
+    this.log(`Browser launch options: headless=${launchOptions.headless}`);
+    this.browser = await chromium.launch(launchOptions);
+    this.context = await this.browser.newContext(contextOptions);
+    this.log('Browser context created');
   }
 
   private async closeBrowser(): Promise<void> {
@@ -82,7 +70,6 @@ export class WebCrawler {
       await this.context.close();
       this.context = null;
     }
-    
     if (this.browser) {
       this.log('Closing browser...');
       await this.browser.close();
@@ -293,6 +280,21 @@ export class WebCrawler {
     this.currentSiteConfig = config;
 
     try {
+      const userDataDir = crawlerConfigService.getUserDataDir(
+        config.name,
+        config.browserConfig
+      );
+      // BOSS: Playwright attach blanks the page; use raw CDP open+evaluate instead.
+      if (
+        userDataDir &&
+        (config.name === 'zhipin-web' || config.name === 'zhipin')
+      ) {
+        const { crawlBossWithRawCdp } = await import('./bossRawCdpCrawl');
+        const result = await crawlBossWithRawCdp(config.url, userDataDir);
+        this.saveData(config.name, result);
+        return;
+      }
+
       await this.setupBrowser();
       await this.handleUrl(config.url, config, config.params);
     } finally {

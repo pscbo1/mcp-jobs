@@ -11,7 +11,13 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts"
   },
-  "keywords": ["jobs", "crawler", "search", "mcp", "model-context-protocol"],
+  "keywords": [
+    "jobs",
+    "crawler",
+    "search",
+    "mcp",
+    "model-context-protocol"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -22,7 +28,8 @@
     "dotenv": "^16.4.7",
     "playwright": "^1.41.2",
     "ts-node": "^10.9.2",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "ws": "^8.21.3"
   },
   "files": [
     "dist",
@@ -30,5 +37,8 @@
   ],
   "engines": {
     "node": ">=16.0.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }

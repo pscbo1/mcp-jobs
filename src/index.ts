@@ -4,14 +4,28 @@ import { crawlerConfigs } from './config/crawlerConfig';
 import { jobSearchUrls } from './config/urlConfig';
 import { CrawlerData } from './crawler/webCrawler';
 import { normalizeJobInfoList } from './crawler/crawlFailure';
+import {
+  applyHardExcludes,
+  FilteredJob,
+} from './filter/jobHardFilter';
+import {
+  crawlBossMultiPage,
+  defaultBossUserDataDir,
+} from './crawler/bossRawCdpCrawl';
 
 // 定义搜索参数接口
 export interface SearchParams {
   keyword?: string;
   city?: string;
   page?: number;
+  /** BOSS desktop: crawl pages [page .. page+maxPages-1], capped at 5. */
+  maxPages?: number;
+  /** Cap unique jobs (default 100 for BOSS multi-page). */
+  maxJobs?: number;
   salary?: string;
   workYear?: string;
+  /** BOSS desktop verified label, e.g. 本科 */
+  degree?: string;
 }
 
 export interface SourceSearchResult {
@@ -23,10 +37,16 @@ export interface SourceSearchResult {
   parsedCount?: number;
   errors?: string[];
   jobCount: number;
+  pagesFetched?: number[];
+  stopReason?: string;
 }
 
 export interface SearchJobListResult {
   jobs: any[];
+  rawJobs: any[];
+  filteredJobs: FilteredJob[];
+  excludedJobs: FilteredJob[];
+  excludeReasonSummary: Record<string, number>;
   sources: SourceSearchResult[];
   allSucceeded: boolean;
   anySucceeded: boolean;
@@ -36,7 +56,6 @@ async function crawlByUrl(url: string, params: SearchParams): Promise<CrawlerDat
   const crawlerService = new CrawlerService();
   const storageService = new StorageService();
 
-  // 根据 URL 匹配对应的配置
   const matchedConfig = crawlerConfigs.find(config => {
     if (config.url === url) return true;
     if (config.urlPattern && new RegExp(config.urlPattern).test(url)) return true;
@@ -49,24 +68,25 @@ async function crawlByUrl(url: string, params: SearchParams): Promise<CrawlerDat
   }
 
   try {
-    const { keyword, city, page, salary, workYear } = params;
-    // 创建一个新的配置，使用匹配到的规则但替换URL
+    const { keyword, city, page, salary, workYear, degree } = params;
     const customConfig = {
       ...matchedConfig,
-      url: matchedConfig.urlBuilder(url, params, matchedConfig?.config || {})
+      url: matchedConfig.urlBuilder(
+        url,
+        { keyword, city, page, salary, workYear, degree },
+        matchedConfig?.config || {}
+      ),
     };
     console.log(customConfig);
     const result = await crawlerService.startCrawling(customConfig);
     console.log(result);
-    
-    // 获取爬取的数据
+
     const dataset = result || [];
-    
-    // 保存爬取结果
+
     await storageService.saveData(customConfig.name, {
       config: customConfig,
       items: dataset,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     });
 
     return dataset;
@@ -83,17 +103,81 @@ async function crawlByUrl(url: string, params: SearchParams): Promise<CrawlerDat
   }
 }
 
+async function crawlBossPages(params: SearchParams): Promise<{
+  dataset: CrawlerData[];
+  pagesFetched: number[];
+  stopReason: string;
+}> {
+  const matched = crawlerConfigs.find((c) => c.name === 'zhipin-web');
+  if (!matched) {
+    return {
+      dataset: [
+        {
+          url: 'https://www.zhipin.com/web/geek/job',
+          data: {},
+          timestamp: Date.now(),
+          succeeded: false,
+          errors: ['NO_PROVIDER_CONFIG: zhipin-web missing'],
+        },
+      ],
+      pagesFetched: [],
+      stopReason: 'no_provider',
+    };
+  }
+
+  const pageFrom = Math.max(1, params.page || 1);
+  const maxPages = Math.min(5, Math.max(1, params.maxPages ?? 5));
+  const pageTo = pageFrom + maxPages - 1;
+  const maxJobs = Math.min(100, Math.max(1, params.maxJobs ?? 100));
+  const userDataDir = defaultBossUserDataDir();
+
+  const buildParams = (page: number) => ({
+    keyword: params.keyword,
+    city: params.city,
+    page,
+    salary: params.salary,
+    workYear: params.workYear,
+    degree: params.degree,
+  });
+
+  const multi = await crawlBossMultiPage(userDataDir, {
+    pageFrom,
+    pageTo,
+    maxJobs,
+    buildPageUrl: (page) =>
+      matched.urlBuilder(matched.url, buildParams(page), matched.config || {}),
+  });
+
+  const dataset: CrawlerData[] = [
+    {
+      url: matched.urlBuilder(matched.url, buildParams(pageFrom), matched.config || {}),
+      finalUrl: multi.perPage[0]?.finalUrl,
+      data: { jobInfo: multi.jobs },
+      rawData: {
+        jobInfo: multi.jobs,
+        perPage: multi.perPage,
+        stopReason: multi.stopReason,
+      },
+      timestamp: Date.now(),
+      succeeded: multi.succeeded,
+      errors: multi.errors,
+      visibleCardCount: multi.perPage.reduce((n, p) => n + (p.visibleCardCount || 0), 0),
+      parsedCount: multi.jobs.length,
+    },
+  ];
+
+  return { dataset, pagesFetched: multi.pagesFetched, stopReason: multi.stopReason };
+}
+
 export async function searchJobList(params: SearchParams = {}): Promise<SearchJobListResult> {
   const { keyword, city, page = 1, salary, workYear } = params;
-  const jobs: any[] = [];
+  const rawJobs: any[] = [];
   const sources: SourceSearchResult[] = [];
 
   console.log(`开始搜索职位 - 关键词: ${keyword}, 城市: ${city || '全国'}`);
 
   for (const config of jobSearchUrls) {
     try {
-      // Keep keyword and city separate when the provider encodes city in the URL.
-      // Liepin/mobile Boss historically appended city into the keyword string.
       const providerKeyword =
         config.name === 'zhaopin' ||
         config.name === 'zhipin-web' ||
@@ -101,13 +185,30 @@ export async function searchJobList(params: SearchParams = {}): Promise<SearchJo
           ? keyword
           : `${keyword || ''} ${city}`.trim();
 
-      const dataset = await crawlByUrl(config.url, {
-        keyword: providerKeyword,
-        city,
-        page,
-        salary,
-        workYear
-      });
+      let dataset: CrawlerData[] | null = null;
+      let pagesFetched: number[] | undefined;
+      let stopReason: string | undefined;
+
+      if (config.name === 'zhipin-web' && (process.env.BOSS_USER_DATA_DIR || defaultBossUserDataDir())) {
+        const boss = await crawlBossPages({
+          ...params,
+          keyword: providerKeyword,
+          city,
+          page,
+        });
+        dataset = boss.dataset;
+        pagesFetched = boss.pagesFetched;
+        stopReason = boss.stopReason;
+      } else {
+        dataset = await crawlByUrl(config.url, {
+          keyword: providerKeyword,
+          city,
+          page,
+          salary,
+          workYear,
+          degree: params.degree,
+        });
+      }
 
       if (dataset === null) {
         sources.push({
@@ -140,13 +241,18 @@ export async function searchJobList(params: SearchParams = {}): Promise<SearchJo
           parsedCount: item.parsedCount ?? 0,
           jobCount: 0,
           errors: item.errors || ['UNKNOWN_FAILURE'],
+          pagesFetched,
+          stopReason,
         });
         console.warn(`从 ${config.name} 抓取失败: ${(item.errors || []).join('; ')}`);
         continue;
       }
 
-      const jobInfo = normalizeJobInfoList(item.data?.jobInfo);
-      jobs.push(...jobInfo);
+      const jobInfo = normalizeJobInfoList(item.data?.jobInfo).map((j) => ({
+        ...j,
+        source: config.name,
+      }));
+      rawJobs.push(...jobInfo);
       sources.push({
         name: config.name,
         succeeded: true,
@@ -155,6 +261,8 @@ export async function searchJobList(params: SearchParams = {}): Promise<SearchJo
         visibleCardCount: item.visibleCardCount,
         parsedCount: item.parsedCount ?? jobInfo.length,
         jobCount: jobInfo.length,
+        pagesFetched,
+        stopReason,
       });
       console.log(`从 ${config.name} 获取到 ${jobInfo.length} 个职位`);
     } catch (error) {
@@ -169,16 +277,33 @@ export async function searchJobList(params: SearchParams = {}): Promise<SearchJo
     }
   }
 
+  const { kept, excluded, reasonSummary } = applyHardExcludes(rawJobs);
   const anySucceeded = sources.some((s) => s.succeeded);
   const allSucceeded = sources.length > 0 && sources.every((s) => s.succeeded);
 
-  console.log(`搜索完成，总共找到 ${jobs.length} 个职位; anySucceeded=${anySucceeded}`);
-  console.log(jobs);
-  return { jobs, sources, allSucceeded, anySucceeded };
+  console.log(
+    `搜索完成，原始 ${rawJobs.length}，保留 ${kept.length}，排除 ${excluded.length}; anySucceeded=${anySucceeded}`
+  );
+  return {
+    jobs: kept,
+    rawJobs,
+    filteredJobs: kept,
+    excludedJobs: excluded,
+    excludeReasonSummary: reasonSummary,
+    sources,
+    allSucceeded,
+    anySucceeded,
+  };
 }
 
 async function main() {
-  const result = await searchJobList({ keyword: '前端开发', city: '北京', page: 1, salary: '10-15万', workYear: '1-3年' });
+  const result = await searchJobList({
+    keyword: '前端开发',
+    city: '北京',
+    page: 1,
+    salary: '10-15万',
+    workYear: '1-3年',
+  });
   console.log(result.sources);
 }
 
@@ -194,13 +319,11 @@ export async function crawlJobDetail(url: string) {
   return item?.data?.job || null;
 }
 
-// 导出函数供外部使用
 export {
   crawlByUrl,
-  jobSearchUrls
+  jobSearchUrls,
 };
 
-// 如果直接运行此文件，则执行 main 函数
 if (require.main === module) {
   main();
 }
