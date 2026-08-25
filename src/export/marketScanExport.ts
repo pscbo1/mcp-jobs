@@ -28,6 +28,9 @@ export type SourceCaptureResult = {
   stopReason?: string;
   errors?: string[];
   pagesFetched?: number[];
+  rawCount?: number;
+  dedupedCount?: number;
+  paginationNote?: string;
   rawJobs: JobLike[];
 };
 
@@ -223,7 +226,8 @@ export function writeSourceExports(opts: {
   fs.writeFileSync(rawJson, JSON.stringify(rawPayload, null, 2), 'utf8');
   fs.writeFileSync(rawCsv, rowsToCsv(rawRows), 'utf8');
   fs.writeFileSync(filteredJson, JSON.stringify(filteredPayload, null, 2), 'utf8');
-  fs.writeFileSync(filteredCsv, rowsToCsv(filteredRows), 'utf8');
+  // filtered CSV: kept rows + excluded rows (排除原因 column filled for excluded)
+  fs.writeFileSync(filteredCsv, rowsToCsv([...filteredRows, ...excludedRows]), 'utf8');
 
   return {
     rawJson,

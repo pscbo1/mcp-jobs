@@ -38,8 +38,20 @@ const SEARCH_JOB_TOOL: Tool = {
       },
       page: {
         type: 'number',
-        description: '页码',
-      }
+        description: '起始页（兼容旧参数；优先使用 pageFrom）',
+      },
+      pageFrom: {
+        type: 'number',
+        description: '起始页（默认 1）',
+      },
+      pageTo: {
+        type: 'number',
+        description: '结束页（默认 5）',
+      },
+      maxJobs: {
+        type: 'number',
+        description: '最多保留去重后职位数（默认 100）',
+      },
     },
     required: ['keyword'],
   },
@@ -79,7 +91,13 @@ function isValidSearchJobParams(args: unknown): args is SearchJobParams {
     'keyword' in args &&
     typeof (args as { keyword: unknown }).keyword === 'string' &&
     (('city' in args && typeof (args as { city: unknown }).city === 'string') || !('city' in args)) &&
-    (('page' in args && typeof (args as { page: unknown }).page === 'number') || !('page' in args))
+    (('page' in args && typeof (args as { page: unknown }).page === 'number') || !('page' in args)) &&
+    (('pageFrom' in args && typeof (args as { pageFrom: unknown }).pageFrom === 'number') ||
+      !('pageFrom' in args)) &&
+    (('pageTo' in args && typeof (args as { pageTo: unknown }).pageTo === 'number') ||
+      !('pageTo' in args)) &&
+    (('maxJobs' in args && typeof (args as { maxJobs: unknown }).maxJobs === 'number') ||
+      !('maxJobs' in args))
   );
 }
 
@@ -136,15 +154,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error('搜索职位的参数格式无效，请检查输入参数');
         }
         
-        const { keyword, city, page, salary, workYear } = args;
+        const { keyword, city, page, pageFrom, pageTo, maxJobs, salary, workYear } = args;
         
         server.sendLoggingMessage({
           level: 'info',
-          data: `开始搜索职位，关键词: ${keyword}, 城市: ${city || '全国'}, 页码: ${page || 1}`,
+          data: `开始搜索职位，关键词: ${keyword}, 城市: ${city || '全国'}, pages ${pageFrom ?? page ?? 1}-${pageTo ?? 'default'}`,
         });
 
         try {
-          const results = await searchJobList({ keyword, city, page, salary, workYear });
+          const results = await searchJobList({
+            keyword,
+            city,
+            page,
+            pageFrom,
+            pageTo,
+            maxJobs,
+            salary,
+            workYear,
+          });
 
           server.sendLoggingMessage({
             level: 'info',
@@ -164,7 +191,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 company: j.company,
                 excludeReasons: j.excludeReasons,
               })),
-              searchParams: { keyword, city, page, salary, workYear },
+              searchParams: { keyword, city, page, pageFrom, pageTo, maxJobs, salary, workYear },
               sources: results.sources,
               anySucceeded: results.anySucceeded,
               allSucceeded: results.allSucceeded,
