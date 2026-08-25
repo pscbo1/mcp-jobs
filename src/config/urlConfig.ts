@@ -8,6 +8,10 @@ export const jobSearchUrls = [
     name: 'zhipin',
   },
   {
+    url: 'https://www.zhipin.com/web/geek/job',
+    name: 'zhipin-web',
+  },
+  {
     url: 'https://www.liepin.com/zhaopin/',
     name: 'liepin',
   },
