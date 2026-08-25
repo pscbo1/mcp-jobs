@@ -92,10 +92,12 @@ export async function searchJobList(params: SearchParams = {}): Promise<SearchJo
 
   for (const config of jobSearchUrls) {
     try {
-      // Keep keyword and city separate for zhaopin (city code).
-      // Liepin/Boss historically appended city into the keyword string.
+      // Keep keyword and city separate when the provider encodes city in the URL.
+      // Liepin/mobile Boss historically appended city into the keyword string.
       const providerKeyword =
-        config.name === 'zhaopin' || !city
+        config.name === 'zhaopin' ||
+        config.name === 'zhipin-web' ||
+        !city
           ? keyword
           : `${keyword || ''} ${city}`.trim();
 

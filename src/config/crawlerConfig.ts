@@ -195,6 +195,125 @@ export const crawlerConfigs: SiteConfig[] = [
     timeout: 30000
   },
   {
+    url: 'https://www.zhipin.com/web/geek/job',
+    name: 'zhipin-web',
+    urlPattern: '^https://www\\.zhipin\\.com/web/geek/jobs?.*$',
+    urlBuilder: (url, params) => {
+      const { keyword, city, page } = params;
+      const cityCodeMap: Record<string, string> = {
+        北京: '101010100',
+        上海: '101020100',
+        广州: '101280100',
+        深圳: '101280600',
+        杭州: '101210100',
+        成都: '101270100',
+        南京: '101190100',
+        武汉: '101200100',
+        西安: '101110100',
+        苏州: '101190400',
+      };
+      const cityCode = cityCodeMap[city || ''] || '100010000';
+      const query = new URLSearchParams();
+      query.set('query', keyword || '');
+      query.set('city', cityCode);
+      if (page && Number(page) > 1) query.set('page', String(page));
+      return `https://www.zhipin.com/web/geek/job?${query.toString()}`;
+    },
+    rules: {
+      jobInfo: {
+        selector: '.job-card-box, .job-card-wrapper',
+        type: 'html',
+        handler: async (currentData, value, element) => {
+          const textOf = async (selectors: string[]): Promise<string> => {
+            for (const sel of selectors) {
+              try {
+                const t = await element.$eval(sel, (el) => el.textContent?.trim() || '');
+                if (t) return t;
+              } catch {
+                // next
+              }
+            }
+            return '';
+          };
+
+          const lines = ((await element.textContent()) || '')
+            .split(/\n+/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+
+          let title = await textOf(['.job-name', '.job-title', 'a.job-card-left']);
+          let salary = await textOf(['.salary']);
+          let company = await textOf([
+            '.company-name a',
+            '.company-name',
+            '.boss-info .name',
+          ]);
+          let address = await textOf(['.job-area', '.company-location', '.job-area-wrapper']);
+          const tags = await element
+            .$$eval('.tag-list li, .job-info ul li, .info-desc', (els) =>
+              els.map((el) => el.textContent?.trim() || '').filter(Boolean)
+            )
+            .catch(() => [] as string[]);
+
+          let experience =
+            tags.find((t) => /年|经验|应届|在校|实习|不限/.test(t)) || '';
+
+          let jobDetail = '';
+          try {
+            jobDetail = await element.$eval(
+              'a[href*="job_detail"], a.job-card-left, a[href]',
+              (el) => {
+                const href = el.getAttribute('href') || '';
+                if (!href) return '';
+                if (href.startsWith('http')) return href;
+                if (href.startsWith('//')) return `https:${href}`;
+                return `https://www.zhipin.com${href.startsWith('/') ? '' : '/'}${href}`;
+              }
+            );
+          } catch {
+            jobDetail = '';
+          }
+
+          // Fallback to line heuristics when CSS drifts / custom font salary
+          if (!title) title = lines[0] || '';
+          if (!salary) {
+            salary = lines.find((l) => /K|k|元|薪|面议/.test(l)) || '';
+          }
+          if (!company) {
+            company =
+              lines.find(
+                (l) =>
+                  /公司|科技|网络|教育|美团|字节|小米|联想|有限/.test(l) &&
+                  !/北京·/.test(l) &&
+                  l !== title
+              ) || '';
+          }
+          if (!address) {
+            address = lines.find((l) => /北京|上海|广州|深圳|·/.test(l)) || '';
+          }
+          if (!experience) {
+            experience =
+              lines.find((l) => /年|应届|在校|实习|经验不限/.test(l) && !/周|个月/.test(l)) ||
+              '';
+          }
+
+          return {
+            title,
+            company,
+            address,
+            experience,
+            salary,
+            jobDetail,
+            tags,
+          };
+        },
+      },
+    },
+    maxRequestsPerCrawl: 1,
+    maxConcurrency: 1,
+    timeout: 45000,
+  },
+  {
     url: 'https://m.zhipin.com/c100010000',
     name: 'zhipin',
     urlPattern: '^https://m\.zhipin\.com/c100010000/[^\.]+$',
